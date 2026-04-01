@@ -49,20 +49,63 @@
  * - Queue structures (StaticQueue_t)
  * - Mutex structures (StaticSemaphore_t)
  */
-void fw_init(void) {
-    /* TODO: Implement initialization */
+
+#include <packet_parser.h>
+
+// Callback UART2 (byte a byte)
+static void uart2_rx_callback(uint8_t byte) {
+    if (parser_process_byte(&parser, byte, &pkt)) {
+        // Pacote válido detectado
+        hal_uart1_send_str("\r\n[OK] Packet received\r\n");
+        char msg[64];
+
+        snprintf(msg, sizeof(msg),
+                 "ID=%d LEN=%d CRC=0x%02X\r\n",
+                 pkt.sensor_id,
+                 pkt.payload_len,
+                 pkt.crc);
+
+        hal_uart1_send_str(msg);
+        hal_uart1_send_str("Payload: ");
+
+        for (uint8_t i = 0; i < pkt.payload_len; i++) {
+            char b[8];
+            snprintf(b, sizeof(b), "%02X ", pkt.payload[i]);
+            hal_uart1_send_str(b);
+        }
+
+        hal_uart1_send_str("\r\n> ");
+    }
 }
 
-/**
- * @brief Firmware main loop
- *
- * Called once from main() after fw_init().
- *
- * TODO: Implement the following:
- * 1. Call vTaskStartScheduler() to start the FreeRTOS scheduler
- * 2. This function should NEVER return (scheduler runs forever)
- * 3. If the scheduler returns (should never happen), enter an error state
- */
+static parser_t parser; 
+static raw_packet_t pkt;
+
+void fw_init(void) {
+    // UART debug
+    hal_uart1_init(115200);
+
+    hal_uart1_send_str("\r\n==============================\r\n");
+    hal_uart1_send_str("FSM Parser Test (NO RTOS)\r\n");
+    hal_uart1_send_str("==============================\r\n");
+    hal_uart1_send_str("Send raw bytes via UART2\r\n");
+    hal_uart1_send_str("> ");
+
+    // Inicializa parser
+    parser_init(&parser);
+
+    // UART de entrada (parser)
+    hal_uart2_init(115200, uart2_rx_callback);
+
+    // LEDs (opcional)
+    hal_gpio_pa5_init();
+
+
 void fw_run(void) {
     /* TODO: Start FreeRTOS scheduler */
+    uint8_t byte;
+
+    while (1) {
+        for (volatile int i = 0; i < 100000; i++);
+    }
 }
