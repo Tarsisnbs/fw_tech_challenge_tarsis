@@ -1,6 +1,7 @@
 /* DO NOT MODIFY */
 #ifndef FREERTOS_CONFIG_H
 #define FREERTOS_CONFIG_H
+#define configUSE_MUTEXES    1
 
 /* Cortex-M4 specific definitions */
 #ifdef __NVIC_PRIO_BITS
