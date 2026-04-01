@@ -100,7 +100,7 @@ void fw_init(void) {
     // LEDs (opcional)
     hal_gpio_pa5_init();
 
-
+}
 void fw_run(void) {
     /* TODO: Start FreeRTOS scheduler */
     uint8_t byte;
