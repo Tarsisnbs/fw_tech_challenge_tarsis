@@ -1,0 +1,32 @@
+// STM32F411RE Platform for Firmware Challenge
+// Based on official Renode STM32F4 platform (stable and tested)
+
+using "platforms/cpus/stm32f4.repl"
+
+// Override memory sizes for STM32F411RE
+flash:
+    size: 0x80000  // 512KB Flash
+
+sram:
+    size: 0x20000  // 128KB RAM
+
+// STM32F411RE uses Cortex-M4F (with FPU)
+cpu:
+    cpuType: "cortex-m4f"
+
+// Adjust systick frequency for 100MHz max clock
+nvic:
+    systickFrequency: 100000000
+
+// UARTs already defined in stm32f4.repl:
+// - usart1 @ 0x40011000 -> nvic@37 ✓
+// - usart2 @ 0x40004400 -> nvic@38 ✓
+
+// GPIO already defined in stm32f4.repl:
+// - gpioPortA @ 0x40020000 ✓
+// - gpioPortB @ 0x40020400 ✓
+
+// EXTI already defined with proper mappings ✓
+
+// All peripherals use official STM32_UART and STM32_GPIOPort types
+// that are compatible with our HAL code!

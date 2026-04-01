@@ -1,0 +1,98 @@
+name: Firmware Challenge CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-22.04
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+      with:
+        submodules: recursive
+
+    - name: Install ARM toolchain
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y gcc-arm-none-eabi binutils-arm-none-eabi
+
+    - name: Install Python and Robot Framework
+      run: |
+        sudo apt-get install -y python3 python3-pip
+        pip3 install robotframework
+
+    - name: Download and install Renode
+      run: |
+        wget https://github.com/renode/renode/releases/download/v1.15.0/renode_1.15.0_amd64.deb
+        sudo apt-get install -y ./renode_1.15.0_amd64.deb
+        renode --version
+
+    - name: Install Renode Robot Framework library
+      run: |
+        pip3 install robotframework-renode
+
+    - name: Build firmware
+      run: |
+        cd firmware
+        mkdir -p build
+        cd build
+        cmake ..
+        make -j$(nproc)
+
+    - name: Check firmware exists
+      run: |
+        ls -lh firmware/build/firmware.elf
+        file firmware/build/firmware.elf
+
+    - name: Check RAM usage (must be <= 6KB)
+      run: |
+        arm-none-eabi-size firmware/build/firmware.elf
+        DATA_BSS=$(arm-none-eabi-size firmware/build/firmware.elf | tail -1 | awk '{print $2 + $3}')
+        echo "Total RAM usage (data + bss): $DATA_BSS bytes"
+        if [ $DATA_BSS -gt 6144 ]; then
+          echo "ERROR: RAM usage exceeds 6KB limit"
+          exit 1
+        fi
+
+    - name: Check no printf in firmware source
+      run: |
+        if grep -r "printf" firmware/src/; then
+          echo "ERROR: printf found in firmware source (use hal_uart1_send_str instead)"
+          exit 1
+        fi
+        echo "PASS: No printf found"
+
+    - name: Check static allocation is enabled
+      run: |
+        if ! grep -r "configSUPPORT_STATIC_ALLOCATION.*1" firmware/; then
+          echo "ERROR: configSUPPORT_STATIC_ALLOCATION not set to 1"
+          exit 1
+        fi
+        echo "PASS: Static allocation is enabled"
+
+    - name: Run public smoke tests
+      run: |
+        cd tests/public
+        renode-test smoke.robot
+
+    - name: Upload test results
+      if: always()
+      uses: actions/upload-artifact@v3
+      with:
+        name: robot-output
+        path: tests/public/robot_output/
+
+    - name: Upload firmware binary
+      uses: actions/upload-artifact@v3
+      with:
+        name: firmware
+        path: |
+          firmware/build/firmware.elf
+          firmware/build/firmware.bin
+          firmware/build/firmware.hex
+          firmware/build/firmware.map

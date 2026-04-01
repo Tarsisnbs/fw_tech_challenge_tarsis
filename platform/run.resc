@@ -1,0 +1,27 @@
+# DO NOT MODIFY
+# Renode boot script for STM32F411RE firmware challenge
+
+# Create machine and load platform description
+mach create "stm32f411"
+machine LoadPlatformDescription @platform/stm32f411.repl
+
+# Load firmware ELF
+sysbus LoadELF @firmware/build/firmware.elf
+
+# Create TCP socket terminal on port 5555 for USART1 (diagnostic shell)
+# This allows 'telnet localhost 5555' to connect
+emulation CreateServerSocketTerminal 5555 "diag_shell" false
+connector Connect sysbus.usart1 diag_shell
+
+# USART2 is left unconnected - will be driven by Robot Framework tests
+# using sysbus.usart2.WriteChar or similar commands
+
+# Optional: enable logging for debugging (comment out for production)
+# logLevel 3 sysbus.usart1
+# logLevel 3 sysbus.usart2
+
+# Start the emulation
+echo "STM32F411RE firmware challenge environment ready"
+echo "Diagnostic shell available at: telnet localhost 5555"
+echo "Starting simulation..."
+start
