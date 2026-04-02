@@ -34,7 +34,7 @@ def main():
     if len(sys.argv) < 2:
         print("Usage: python3 crc8.py <byte1> <byte2> ... <byteN>")
         print("Example: python3 crc8.py 0xA5 0x5A 0x01 0x02 0xAB 0xCD")
-        sys.exit(1)
+        #sys.exit(1)
 
     # Parse hex bytes from command line
     data = []
