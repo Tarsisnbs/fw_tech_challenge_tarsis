@@ -22,90 +22,78 @@
 #include "queue.h"
 #include "semphr.h"
 
-/**
- * @brief Firmware initialization
- *
- * Called once from main() before the scheduler starts.
- *
- * TODO: Implement the following:
- * 1. Initialize HAL peripherals (UART1, UART2, GPIO PA5, PA6, PB0)
- * 2. Create all FreeRTOS tasks using xTaskCreateStatic()
- *    - Watchdog LED task (toggles PA5 every 500ms)
- *    - Sensor packet processing task
- *    - Fault monitor task (checks sensor timeouts every 200ms)
- *    - Diagnostic shell task (handles UART1 commands)
- * 3. Create FreeRTOS queues using xQueueCreateStatic()
- *    - Queue for UART2 RX bytes (ISR to task handoff)
- *    - Queue for UART1 RX bytes (if needed for command parsing)
- * 4. Create FreeRTOS mutexes using xSemaphoreCreateMutexStatic()
- *    - Mutex for sensor data store access
- *    - Mutex for UART1 TX access (if needed)
- * 5. Initialize sensor storage structures (statically allocated)
- *
- * All memory must be statically allocated - declare static arrays for:
- * - Task stacks (StackType_t)
- * - Task control blocks (StaticTask_t)
- * - Queue storage (uint8_t arrays)
- * - Queue structures (StaticQueue_t)
- * - Mutex structures (StaticSemaphore_t)
- */
 
-#include <packet_parser.h>
+#define STACK_SIZE_LED 128
+static StackType_t xLEDStack[STACK_SIZE_LED];
+static StaticTask_t xLEDTaskBuffer;
+TaskHandle_t xLEDTaskHandle = NULL;
 
-// Callback UART2 (byte a byte)
-static void uart2_rx_callback(uint8_t byte) {
-    if (parser_process_byte(&parser, byte, &pkt)) {
-        // Pacote válido detectado
-        hal_uart1_send_str("\r\n[OK] Packet received\r\n");
-        char msg[64];
-
-        snprintf(msg, sizeof(msg),
-                 "ID=%d LEN=%d CRC=0x%02X\r\n",
-                 pkt.sensor_id,
-                 pkt.payload_len,
-                 pkt.crc);
-
-        hal_uart1_send_str(msg);
-        hal_uart1_send_str("Payload: ");
-
-        for (uint8_t i = 0; i < pkt.payload_len; i++) {
-            char b[8];
-            snprintf(b, sizeof(b), "%02X ", pkt.payload[i]);
-            hal_uart1_send_str(b);
-        }
-
-        hal_uart1_send_str("\r\n> ");
+void vLEDTask(void *pvParameters) {
+    /* Configuração inicial do GPIO se necessário */
+    for(;;) {
+        // Altera o estado do LED (verifique o nome correto na sua HAL)
+        hal_gpio_pa5_toggle(); 
+        
+        // Bloqueia a task por 500ms
+        vTaskDelay(pdMS_TO_TICKS(500)); 
     }
 }
 
-static parser_t parser; 
-static raw_packet_t pkt;
 
 void fw_init(void) {
-    // UART debug
-    hal_uart1_init(115200);
-
-    hal_uart1_send_str("\r\n==============================\r\n");
-    hal_uart1_send_str("FSM Parser Test (NO RTOS)\r\n");
-    hal_uart1_send_str("==============================\r\n");
-    hal_uart1_send_str("Send raw bytes via UART2\r\n");
-    hal_uart1_send_str("> ");
-
-    // Inicializa parser
-    parser_init(&parser);
-
-    // UART de entrada (parser)
-    hal_uart2_init(115200, uart2_rx_callback);
-
-    // LEDs (opcional)
+    /* 1. Inicialização do Hardware (Clock, GPIO, etc) */
     hal_gpio_pa5_init();
 
+    /* 2. Criação da Task de forma estática */
+    xLEDTaskHandle = xTaskCreateStatic(
+        vLEDTask,           /* Função da task */
+        "LED_TASK",         /* Nome para debug */
+        STACK_SIZE_LED,     /* Tamanho da pilha */
+        NULL,               /* Parâmetros */
+        1,                  /* Prioridade */
+        xLEDStack,          /* Array da pilha */
+        &xLEDTaskBuffer     /* Buffer de controle */
+    );
 
+}
+
+/**
+ * @brief Firmware main loop
+ *
+ * Called once from main() after fw_init().
+ *
+ * TODO: Implement the following:
+ * 1. Call vTaskStartScheduler() to start the FreeRTOS scheduler
+ * 2. This function should NEVER return (scheduler runs forever)
+ * 3. If the scheduler returns (should never happen), enter an error state
+ */
 void fw_run(void) {
-    /* TODO: Start FreeRTOS scheduler */
-    uint8_t byte;
+    
+    /* 3. Inicia o escalonador */
+    vTaskStartScheduler();
+    hal_uart1_send_str("ERRO: O escalonador parou!\r\n");
+    while(1){
 
-    while (1) {
-        for (volatile int i = 0; i < 100000; i++);
     }
+}
+
+/* Funções exigidas pelo FreeRTOS para Alocação Estática */
+void vApplicationGetIdleTaskMemory(StaticTask_t **ppxIdleTaskTCBBuffer, 
+                                    StackType_t **ppxIdleTaskStackBuffer, 
+                                    uint32_t *pulIdleTaskStackSize) {
+    static StaticTask_t xIdleTaskTCB;
+    static StackType_t uxIdleTaskStack[configMINIMAL_STACK_SIZE];
+    *ppxIdleTaskTCBBuffer = &xIdleTaskTCB;
+    *ppxIdleTaskStackBuffer = uxIdleTaskStack;
+    *pulIdleTaskStackSize = configMINIMAL_STACK_SIZE;
+}
+
+void vApplicationGetTimerTaskMemory(StaticTask_t **ppxTimerTaskTCBBuffer, 
+                                     StackType_t **ppxTimerTaskStackBuffer, 
+                                     uint32_t *pulTimerTaskStackSize) {
+    static StaticTask_t xTimerTaskTCB;
+    static StackType_t uxTimerTaskStack[configTIMER_TASK_STACK_DEPTH];
+    *ppxTimerTaskTCBBuffer = &xTimerTaskTCB;
+    *ppxTimerTaskStackBuffer = uxTimerTaskStack;
+    *pulTimerTaskStackSize = configTIMER_TASK_STACK_DEPTH;
 }
