@@ -22,38 +22,39 @@
 #include "queue.h"
 #include "semphr.h"
 
-
+// 128 words = 512 bytes (requirement limit)
 #define STACK_SIZE_LED 128
 static StackType_t xLEDStack[STACK_SIZE_LED];
 static StaticTask_t xLEDTaskBuffer;
 TaskHandle_t xLEDTaskHandle = NULL;
 
 void vLEDTask(void *pvParameters) {
-    /* Configuração inicial do GPIO se necessário */
+    TickType_t xLastWakeTime = xTaskGetTickCount();
     for(;;) {
-        // Altera o estado do LED (verifique o nome correto na sua HAL)
         hal_gpio_pa5_toggle(); 
-        
-        // Bloqueia a task por 500ms
-        vTaskDelay(pdMS_TO_TICKS(500)); 
+        // Block the task for 500ms.
+        vTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(500));
     }
 }
 
 
 void fw_init(void) {
-    /* 1. Inicialização do Hardware (Clock, GPIO, etc) */
     hal_gpio_pa5_init();
 
-    /* 2. Criação da Task de forma estática */
+    //Creating the Task statically
     xLEDTaskHandle = xTaskCreateStatic(
-        vLEDTask,           /* Função da task */
-        "LED_TASK",         /* Nome para debug */
-        STACK_SIZE_LED,     /* Tamanho da pilha */
-        NULL,               /* Parâmetros */
-        1,                  /* Prioridade */
-        xLEDStack,          /* Array da pilha */
-        &xLEDTaskBuffer     /* Buffer de controle */
+        vLEDTask,           
+        "LED_TASK",         
+        STACK_SIZE_LED,   
+        NULL,               
+        tskIDLE_PRIORITY + 2,                  
+        xLEDStack,         
+        &xLEDTaskBuffer     
     );
+    if (xLEDTaskHandle == NULL){
+        hal_uart1_send_str("ERROR: Failed to create LED task\r\n");
+        while(1);
+    }
 
 }
 
@@ -69,15 +70,15 @@ void fw_init(void) {
  */
 void fw_run(void) {
     
-    /* 3. Inicia o escalonador */
+    //Start the scheduler.
     vTaskStartScheduler();
-    hal_uart1_send_str("ERRO: O escalonador parou!\r\n");
+    hal_uart1_send_str("ERROR: The scheduler has stopped.\r\n");
     while(1){
 
     }
 }
 
-/* Funções exigidas pelo FreeRTOS para Alocação Estática */
+/* Functions required by FreeRTOS for Static Allocation*/
 void vApplicationGetIdleTaskMemory(StaticTask_t **ppxIdleTaskTCBBuffer, 
                                     StackType_t **ppxIdleTaskStackBuffer, 
                                     uint32_t *pulIdleTaskStackSize) {
