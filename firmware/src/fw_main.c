@@ -51,14 +51,6 @@ static void send_hex_byte(uint8_t byte) {
 /* --- Callbacks and Tasks --- */
 
 static void uart2_rx_callback(uint8_t byte) {
-    /*
-    hal_uart1_send_str("HW OK: ");
-    // Envia o byte de volta para o terminal de debug
-    uint8_t buf[1] = {byte};
-    hal_uart1_send(buf, 1);
-    hal_uart1_send_str("\r\n");
-    */
-    
     BaseType_t xHigherPriorityTaskWoken = pdFALSE;
     if (uart_rx_queue != NULL) {
         // Send the raw byte to the queue.
@@ -77,6 +69,7 @@ void vLEDTask(void *pvParameters) {
     }
 }
 
+
 static void parser_task(void *arg) {
     uint8_t byte;
 
@@ -92,22 +85,6 @@ static void parser_task(void *arg) {
     }
 }
 
-/*
-static void parser_task(void *arg) {
-    uint8_t byte;
-    hal_uart1_send_str("[STEP 2] UART2 Monitor Active...\r\n");
-    while (1) {
-        // The task sleeps here until the ISR wakes it up with a byte.
-        if (xQueueReceive(uart_rx_queue, &byte, portMAX_DELAY)) {
-            
-            // TEST LOG: If you see this, the interrupt and the queue are OK.
-            hal_uart1_send_str(" ISR ok");
-
-            // The Watchdog LED should continue blinking normally.
-        }
-    }
-}
-*/
 void fw_init(void) {
     hal_gpio_pa5_init();
 
@@ -136,7 +113,7 @@ void fw_init(void) {
     }
     xPARSERTaskHandle = xTaskCreateStatic(
         parser_task, 
-        "echo", 
+        "parser", 
         STACK_SIZE_WORDS, 
         NULL, 
         1, 
@@ -144,11 +121,12 @@ void fw_init(void) {
         &parser_tcb
     );
     hal_uart2_init(115200, uart2_rx_callback);
+
     /* RTOS COMPATIBILITY REPAIR (Invisible to the HAL) Address 0xE000E400 
     is the beginning of the Cortex-M4 priority registers (IPR). USART2 
     on the STM32F411 is interrupt number 38. */
     volatile uint8_t *nvic_ipr = (volatile uint8_t *)0xE000E400;
-    nvic_ipr[38] = (uint8_t)(7 << 4); // Define prioridade 7 (Segura para FreeRTOS)
+    nvic_ipr[38] = (uint8_t)(7 << 4); // Define priority 7 (Safe for FreeRTOS)
 }
 
 void fw_run(void) {
