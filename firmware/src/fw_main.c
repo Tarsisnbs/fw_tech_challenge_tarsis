@@ -22,12 +22,14 @@
 #include "queue.h"
 #include "semphr.h"
 
-// 128 words = 512 bytes (requirement limit)
+
+TaskHandle_t xLEDTaskHandle = NULL;
+
+/* ================= WATCHDOG LED TASK ================= 
+         128 words = 512 bytes (requirement limit)*/
 #define STACK_SIZE_LED 128
 static StackType_t xLEDStack[STACK_SIZE_LED];
 static StaticTask_t xLEDTaskBuffer;
-TaskHandle_t xLEDTaskHandle = NULL;
-
 void vLEDTask(void *pvParameters) {
     TickType_t xLastWakeTime = xTaskGetTickCount();
     for(;;) {
@@ -36,7 +38,6 @@ void vLEDTask(void *pvParameters) {
         vTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(500));
     }
 }
-
 
 void fw_init(void) {
     hal_gpio_pa5_init();
