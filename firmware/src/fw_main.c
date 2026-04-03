@@ -82,7 +82,7 @@ static void parser_task(void *arg){
     
 }
 
-static StackType_t parser_stack[512];
+static StackType_t parser_stack[256];
 static StaticTask_t parser_tcb;
 
 void fw_init(void) {
@@ -107,7 +107,7 @@ void fw_init(void) {
     xTaskCreateStatic(
         parser_task,
         "parser",
-        512,
+        256,
         NULL,
         2,
         parser_stack,
