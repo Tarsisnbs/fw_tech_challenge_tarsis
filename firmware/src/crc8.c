@@ -1,6 +1,6 @@
 #include "crc8.h"
 
-static uint8_t crc8_update(uint8_t crc, uint8_t data){
+uint8_t crc8_update(uint8_t crc, uint8_t data){
     crc ^= data; 
     for (uint8_t i = 0; i < 8; i++){
         if (crc & 0x80){
