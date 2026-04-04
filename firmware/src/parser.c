@@ -25,6 +25,7 @@ bool parse_byte(parser_t *ptr_parser, uint8_t byte, raw_packet_t *ptr_pkt){
     case STATE_WAIT_HEADER1:
         if(byte == PKT_HEADER_1){
             ptr_parser->crc = 0;
+            ptr_parser->payload_index = 0;
             ptr_parser->crc = crc8_update(ptr_parser->crc, byte);
             ptr_parser->state = STATE_WAIT_HEADER2;
         } 
@@ -37,6 +38,7 @@ bool parse_byte(parser_t *ptr_parser, uint8_t byte, raw_packet_t *ptr_pkt){
         }
         else if (byte == PKT_HEADER_1) {
             //smart resinc to evite noise like |0xA5|0x5A|0xA5|...|
+            ptr_parser->crc = 0;
             ptr_parser->crc = crc8_update(ptr_parser->crc, byte);
             ptr_parser->state = STATE_WAIT_HEADER2;
 

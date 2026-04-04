@@ -8,10 +8,11 @@
 #include "queue.h"
 #include <stddef.h>
 #include <stdint.h>
+#include "semphr.h"
 
 
 /* --- Static Settings--- */
-#define UART_QUEUE_LENGTH 64
+#define UART_QUEUE_LENGTH 128
 #define STACK_SIZE_WORDS  128 
 
 static uint8_t          uart_queue_storage[UART_QUEUE_LENGTH];
@@ -32,6 +33,20 @@ static StaticTask_t     parser_tcb;
 static parser_t parser;
 static raw_packet_t pkt;
 
+//Ring Buffer
+#define MAX_SENSORS       4
+#define RING_BUFFER_SIZE  8
+static SemaphoreHandle_t xVaultMutex = NULL;
+static StaticSemaphore_t xVaultMutexBuffer;
+typedef struct {
+    uint8_t    slots[RING_BUFFER_SIZE][16]; // Ring Buffer
+    uint8_t    last_payload[16];            // Último recebido
+    uint32_t   sample_count;                // Contador total
+    TickType_t last_rx_tick;                // Timestamp
+    bool       registered;                  // Flag de atividade
+} sensor_data_t;
+
+static sensor_data_t sensor_vault[MAX_SENSORS];
 
 /* --- Help Functions--- */
 
@@ -49,12 +64,18 @@ static void send_hex_byte(uint8_t byte) {
 
 
 /* --- Callbacks and Tasks --- */
+static volatile uint32_t isr_drop_count = 0; 
+static volatile uint32_t isr_rx_count = 0; 
 
 static void uart2_rx_callback(uint8_t byte) {
     BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+
+    //isr_rx_count++;
+
     if (uart_rx_queue != NULL) {
         // Send the raw byte to the queue.
-        xQueueSendFromISR(uart_rx_queue, &byte, &xHigherPriorityTaskWoken);
+       if(xQueueSendFromISR(uart_rx_queue, &byte, &xHigherPriorityTaskWoken) != pdPASS);
+        //isr_drop_count++;
     }
     portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
     
@@ -69,17 +90,44 @@ void vLEDTask(void *pvParameters) {
     }
 }
 
+static void update_sensor_vault(raw_packet_t *p) {
+    if (p->sensor_id >= MAX_SENSORS) return;
+
+    if (xSemaphoreTake(xVaultMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+        sensor_data_t *s = &sensor_vault[p->sensor_id];
+        uint8_t slot = s->sample_count % RING_BUFFER_SIZE;
+
+        memcpy(s->slots[slot], p->payload, p->payload_len);
+        memcpy(s->last_payload, p->payload, p->payload_len);
+        
+        s->sample_count++;
+        s->last_rx_tick = xTaskGetTickCount();
+        s->registered = true;
+
+        xSemaphoreGive(xVaultMutex);
+    }
+}
 
 static void parser_task(void *arg) {
     uint8_t byte;
-
     parser_init(&parser);
-    hal_uart1_send_str("parser init\r\n");
+    hal_uart1_send_str("Parser Task: Running\r\n");
 
-    while (1) {
+    for (;;) {
+        // Responsabilidade 1: Aguardar entrada
         if (xQueueReceive(uart_rx_queue, &byte, portMAX_DELAY)) {
+            
+            // Responsabilidade 2: Alimentar a FSM
             if (parse_byte(&parser, byte, &pkt)) {
-                hal_uart1_send_str("\r\n[OK] Packet received\r\n");
+                
+                // Responsabilidade 3: Delegar o salvamento
+                //update_sensor_vault(&pkt);
+                
+                // Responsabilidade 4: Notificar (opcional/debug)
+                hal_uart1_send_str("[OK] Packet\r\n");
+
+                // Responsabilidade 5: Limpar estado temporário
+                memset(&pkt, 0, sizeof(raw_packet_t));
             }
         }
     }
@@ -96,6 +144,13 @@ void fw_init(void) {
         UART_QUEUE_LENGTH, 1, 
         uart_queue_storage, &uart_queue_struct
     );
+
+        /* RTOS COMPATIBILITY REPAIR (Invisible to the HAL) Address 0xE000E400 
+    is the beginning of the Cortex-M4 priority registers (IPR). USART2 
+    on the STM32F411 is interrupt number 38. */
+    volatile uint8_t *nvic_ipr = (volatile uint8_t *)0xE000E400;
+    nvic_ipr[38] = (uint8_t)(10 << 4); // Define priority 7 (Safe for FreeRTOS)
+    hal_uart2_init(115200, uart2_rx_callback);
 
     //Creating the Task statically
     xLEDTaskHandle = xTaskCreateStatic(
@@ -120,17 +175,11 @@ void fw_init(void) {
         parser_stack, 
         &parser_tcb
     );
-    hal_uart2_init(115200, uart2_rx_callback);
-
-    /* RTOS COMPATIBILITY REPAIR (Invisible to the HAL) Address 0xE000E400 
-    is the beginning of the Cortex-M4 priority registers (IPR). USART2 
-    on the STM32F411 is interrupt number 38. */
-    volatile uint8_t *nvic_ipr = (volatile uint8_t *)0xE000E400;
-    nvic_ipr[38] = (uint8_t)(7 << 4); // Define priority 7 (Safe for FreeRTOS)
+    
 }
 
 void fw_run(void) {
-    
+
     //Start the scheduler.
     vTaskStartScheduler();
     hal_uart1_send_str("ERROR: The scheduler has stopped.\r\n");
