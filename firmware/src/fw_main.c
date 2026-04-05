@@ -3,82 +3,49 @@
 #include "hal_uart.h"
 #include "hal_gpio.h"
 #include "parser.h"
+#include "platform.h"
+#include "storage.h"  
 #include "FreeRTOS.h"
 #include "task.h"
 #include "queue.h"
-#include <stddef.h>
-#include <stdint.h>
-#include "semphr.h"
-#include "platform.h"
+#include <string.h>
 
 /* --- Static Settings--- */
 #define UART_QUEUE_LENGTH 128
-#define STACK_SIZE_WORDS  128 
+#define STACK_SIZE_WORDS  256
 
 static uint8_t          uart_queue_storage[UART_QUEUE_LENGTH];
 static StaticQueue_t    uart_queue_struct;
-static QueueHandle_t uart_rx_queue = NULL;
+static QueueHandle_t    uart_rx_queue = NULL;
 
-// Task Watchdog
+// Task LED
 #define STACK_SIZE_LED 128
-
+static StackType_t      xLEDStack[STACK_SIZE_LED];
+static StaticTask_t     xLEDTaskBuffer;
 TaskHandle_t xLEDTaskHandle = NULL;
-static StackType_t xLEDStack[STACK_SIZE_LED];
-static StaticTask_t xLEDTaskBuffer;
 
-// Task Parser (In this step, acting as Eco/Monitor)
-TaskHandle_t xPARSERTaskHandle = NULL;
+// Task Parser
 static StackType_t      parser_stack[STACK_SIZE_WORDS];
 static StaticTask_t     parser_tcb;
-static parser_t parser;
-static raw_packet_t pkt;
+static parser_t         parser;
+static raw_packet_t     pkt;
+TaskHandle_t xPARSERTaskHandle = NULL;
 
-//Ring Buffer
-#define MAX_SENSORS       4
-#define RING_BUFFER_SIZE  8
-static SemaphoreHandle_t xVaultMutex = NULL;
-static StaticSemaphore_t xVaultMutexBuffer;
-typedef struct {
-    uint8_t    slots[RING_BUFFER_SIZE][16]; // Ring Buffer
-    uint8_t    last_payload[16];            // Último recebido
-    uint32_t   sample_count;                // Contador total
-    TickType_t last_rx_tick;                // Timestamp
-    bool       registered;                  // Flag de atividade
-} sensor_data_t;
-
-static sensor_data_t sensor_vault[MAX_SENSORS];
-
-/* --- Help Functions--- */
-
-static void send_hex_byte(uint8_t byte) {
-    const char hex_digits[] = "0123456789ABCDEF";
-    char buffer[3];
-    
-    buffer[0] = hex_digits[(byte >> 4) & 0x0F];
-    buffer[1] = hex_digits[byte & 0x0F];
-    buffer[2] = '\0';
-
-    hal_uart1_send_str(buffer);
-    hal_uart1_send_str(" "); 
-}
-
-
-/* --- Callbacks and Tasks --- */
-static volatile uint32_t isr_drop_count = 0; 
-static volatile uint32_t isr_rx_count = 0; 
+//Telemetry global Variables
+volatile uint32_t       isr_drop_count = 0; 
+volatile uint32_t       isr_rx_count = 0;
 
 static void uart2_rx_callback(uint8_t byte) {
     BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-
-    //isr_rx_count++;
 
     if (uart_rx_queue != NULL) {
         // Send the raw byte to the queue.
        if(xQueueSendFromISR(uart_rx_queue, &byte, &xHigherPriorityTaskWoken) != pdPASS){
             isr_drop_count++;
-            hal_uart1_send_str("DROP\n");
        }
-        else hal_uart1_send_str("rcv\n");
+        else {
+            isr_rx_count++;
+        }
     }
     
     portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
@@ -89,26 +56,7 @@ void vLEDTask(void *pvParameters) {
     TickType_t xLastWakeTime = xTaskGetTickCount();
     for(;;) {
         hal_gpio_pa5_toggle(); 
-        // Block the task for 500ms.
         vTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(500));
-    }
-}
-
-static void update_sensor_vault(raw_packet_t *p) {
-    if (p->sensor_id >= MAX_SENSORS) return;
-
-    if (xSemaphoreTake(xVaultMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
-        sensor_data_t *s = &sensor_vault[p->sensor_id];
-        uint8_t slot = s->sample_count % RING_BUFFER_SIZE;
-
-        memcpy(s->slots[slot], p->payload, p->payload_len);
-        memcpy(s->last_payload, p->payload, p->payload_len);
-        
-        s->sample_count++;
-        s->last_rx_tick = xTaskGetTickCount();
-        s->registered = true;
-
-        xSemaphoreGive(xVaultMutex);
     }
 }
 
@@ -118,19 +66,16 @@ static void parser_task(void *arg) {
     hal_uart1_send_str("Parser Task: Running\r\n");
 
     for (;;) {
-        // Responsabilidade 1: Aguardar entrada
         if (xQueueReceive(uart_rx_queue, &byte, portMAX_DELAY)) {
-            
-            // Responsabilidade 2: Alimentar a FSM
             if (parse_byte(&parser, byte, &pkt)) {
-                
-                // Responsabilidade 3: Delegar o salvamento
-                //update_sensor_vault(&pkt);
-                
-                // Responsabilidade 4: Notificar (opcional/debug)
-                hal_uart1_send_str("[OK] Packet\r\n");
-
-                // Responsabilidade 5: Limpar estado temporário
+                //The storage handles the Mutex and the Ring Buffer.
+                //Light debug here
+                if (storage_save_packet(pkt.sensor_id, pkt.payload, pkt.payload_len)) {
+                    hal_uart1_send_str("."); //save ok in buffer
+                }
+                else{
+                    hal_uart1_send_str("!"); //save error
+                }
                 memset(&pkt, 0, sizeof(raw_packet_t));
             }
         }
@@ -138,25 +83,24 @@ static void parser_task(void *arg) {
 }
 
 void fw_init(void) {
+    //Basic Initialization
     hal_gpio_pa5_init();
-
     hal_uart1_init(115200);
-    hal_uart1_send_str("\r\n--- STARTING LAYER 2 TEST ---\r\n");
- 
-    //Create Queue
+    hal_uart1_send_str("\r\n--- STARTING LAYER 2 (parser) and LAYER 3 (ringbuffer) TEST ---\r\n");
+    
+    //Kernel and Data Module Initialization
+    storage_init();
     uart_rx_queue = xQueueCreateStatic(
         UART_QUEUE_LENGTH, 1, 
         uart_queue_storage, &uart_queue_struct
     );
-    // Define priority 7 (Safe for FreeRTOS)
-        /* RTOS COMPATIBILITY REPAIR (Invisible to the HAL) Address 0xE000E400 
-    is the beginning of the Cortex-M4 priority registers (IPR). USART2 
-    on the STM32F411 is interrupt number 38. */
+
+    //Hardware and NVIC configuration (via Platform)
     platform_set_irq_priority(USART2_IRQn, PLATFORM_PRIO_SAFE);
     platform_enable_interrupt(USART2_IRQn);
     hal_uart2_init(115200, uart2_rx_callback);
 
-    //Creating the Task statically
+    //Creating Tasks
     xLEDTaskHandle = xTaskCreateStatic(
         vLEDTask,           
         "LED_TASK",         
