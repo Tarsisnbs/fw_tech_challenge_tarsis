@@ -9,7 +9,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "semphr.h"
-
+#include "platform.h"
 
 /* --- Static Settings--- */
 #define UART_QUEUE_LENGTH 128
@@ -74,9 +74,13 @@ static void uart2_rx_callback(uint8_t byte) {
 
     if (uart_rx_queue != NULL) {
         // Send the raw byte to the queue.
-       if(xQueueSendFromISR(uart_rx_queue, &byte, &xHigherPriorityTaskWoken) != pdPASS);
-        //isr_drop_count++;
+       if(xQueueSendFromISR(uart_rx_queue, &byte, &xHigherPriorityTaskWoken) != pdPASS){
+            isr_drop_count++;
+            hal_uart1_send_str("DROP\n");
+       }
+        else hal_uart1_send_str("rcv\n");
     }
+    
     portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
     
 }
@@ -144,12 +148,12 @@ void fw_init(void) {
         UART_QUEUE_LENGTH, 1, 
         uart_queue_storage, &uart_queue_struct
     );
-
+    // Define priority 7 (Safe for FreeRTOS)
         /* RTOS COMPATIBILITY REPAIR (Invisible to the HAL) Address 0xE000E400 
     is the beginning of the Cortex-M4 priority registers (IPR). USART2 
     on the STM32F411 is interrupt number 38. */
-    volatile uint8_t *nvic_ipr = (volatile uint8_t *)0xE000E400;
-    nvic_ipr[38] = (uint8_t)(10 << 4); // Define priority 7 (Safe for FreeRTOS)
+    platform_set_irq_priority(USART2_IRQn, PLATFORM_PRIO_SAFE);
+    platform_enable_interrupt(USART2_IRQn);
     hal_uart2_init(115200, uart2_rx_callback);
 
     //Creating the Task statically
@@ -158,7 +162,7 @@ void fw_init(void) {
         "LED_TASK",         
         STACK_SIZE_LED,   
         NULL,               
-        tskIDLE_PRIORITY + 2,                  
+        tskIDLE_PRIORITY + 3,                  
         xLEDStack,         
         &xLEDTaskBuffer     
     );

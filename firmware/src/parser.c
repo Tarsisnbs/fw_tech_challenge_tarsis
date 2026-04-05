@@ -1,5 +1,7 @@
 #include "parser.h"
 #include "crc8.h"
+#include "hal_uart.h"
+
 
 #define PKT_HEADER_1 0xA5
 #define PKT_HEADER_2 0x5A
