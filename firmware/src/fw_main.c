@@ -19,6 +19,16 @@ static uint8_t          uart_queue_storage[UART_QUEUE_LENGTH];
 static StaticQueue_t    uart_queue_struct;
 static QueueHandle_t    uart_rx_queue = NULL;
 
+/* --- Shell Infrastructure --- */
+static uint8_t          shell_queue_storage[32];
+static StaticQueue_t    shell_queue_struct;
+QueueHandle_t           shell_rx_queue = NULL; // Sem static para o shell.c enxergar
+
+#define STACK_SIZE_SHELL 256
+static StackType_t      shell_stack[STACK_SIZE_SHELL];
+static StaticTask_t     shell_tcb;
+TaskHandle_t            xSHELLTaskHandle = NULL;
+
 // Task WDGLED
 #define STACK_SIZE_LED 128
 static StackType_t      xLEDStack[STACK_SIZE_LED];
@@ -45,9 +55,106 @@ volatile uint32_t       isr_rx_count = 0;
 //acess USART1
 static StaticSemaphore_t uart1_mutex_buffer;
 static SemaphoreHandle_t uart1_mutex;
+//////////////////////////////////////////////////////////shell.h
+typedef void (*shell_print_fn)(const char *str);
+// Struct de configuração que você passa no shell_init
+typedef struct {
+    shell_print_fn print;
+} shell_config_t;
+void shell_init(shell_config_t *config);
+void vShellTask(void *argument);
+
+//////////////////////////////////////////////////////////SHEL.C
+extern QueueHandle_t shell_rx_queue;
+static shell_config_t shell_cfg;
+
+void shell_init(shell_config_t *config) {
+    if (config) shell_cfg = *config;
+}
+
+static void process_command(char *cmd) {
+    char out[64];
+    if (strcmp(cmd, "STATUS") == 0) {
+        int n = 0;
+        for (int i = 0; i < MAX_SENSORS; i++) {
+            if (storage_get_sensor(i)->registered) n++;
+        }
+        snprintf(out, sizeof(out), "OK sensors=%d fault=%d\n", n, sensors_check_for_timeout(2000));
+        shell_cfg.print(out);
+    } 
+    else if (strcmp(cmd, "DUMP") == 0) {
+        if (storage_lock(pdMS_TO_TICKS(100))) {
+            for (int i = 0; i < MAX_SENSORS; i++) {
+                sensor_data_t *s = storage_get_sensor(i);
+                if (s && s->registered) {
+                    uint16_t hex = (s->last_payload[0] << 8) | s->last_payload[1];
+                    snprintf(out, sizeof(out), "%d last=%04X count=%lu\n", i, hex, s->sample_count);
+                    shell_cfg.print(out);
+                }
+            }
+            shell_cfg.print("END\n");
+            storage_unlock();
+        }
+    }
+    else if (strcmp(cmd, "RESET") == 0) {
+        storage_init();
+        shell_cfg.print("OK\n");
+    }
+    else if (strcmp(cmd, "?") == 0) {
+        shell_cfg.print("Commands: STATUS, DUMP, RESET, ?\nEND\n");
+    }
+    else if (strlen(cmd) > 0) {
+        shell_cfg.print("ERR unknown\n");
+    }
+}
+
+void vShellTask(void *argument) {
+    (void)argument;
+    uint8_t c;
+    static char buf[32];
+    static uint8_t idx = 0;
+
+    shell_cfg.print("Shell Online\n");
+
+    for (;;) {
+        // Se o botão for apertado, xTaskNotifyGive acorda isso aqui
+        if (ulTaskNotifyTake(pdTRUE, 0) > 0) {
+            process_command("DUMP");
+        }
+
+        if (xQueueReceive(shell_rx_queue, &c, pdMS_TO_TICKS(50)) == pdPASS) {
+            if (c == '\n' || c == '\r') {
+                buf[idx] = '\0';
+                process_command(buf);
+                idx = 0;
+            } else if (idx < 31) {
+                buf[idx++] = c;
+            }
+        }
+    }
+}
+//////////////////////////////////////////////////////////SHEL.C
+// Handler manual para capturar comandos do terminal
+void USART1_IRQHandler(void) {
+    if (USART1->SR & USART_SR_RXNE) {
+        uint8_t byte = (uint8_t)(USART1->DR & 0xFF);
+        BaseType_t woken = pdFALSE;
+        if (shell_rx_queue != NULL) {
+            xQueueSendFromISR(shell_rx_queue, &byte, &woken);
+        }
+        portYIELD_FROM_ISR(woken);
+    }
+}
+
+// Callback do botão para o Requisito 6
+void pb0_falling_callback(void) {
+    if (xSHELLTaskHandle != NULL) {
+        xTaskNotifyGive(xSHELLTaskHandle);
+    }
+}
 
 //secure use of USART1 with MUTEX
-static void uart1_safe_send(const char *str) {
+static void uart1_safe_send(const char *str) { 
     if (uart1_mutex) {
         xSemaphoreTake(uart1_mutex, portMAX_DELAY);
         hal_uart1_send_str(str);
@@ -130,7 +237,20 @@ void fw_init(void) {
     hal_gpio_pa5_init();
     hal_gpio_pa6_init();
     hal_uart1_init(115200);
+    hal_gpio_pb0_init(pb0_falling_callback);
+    platform_set_irq_priority(EXTI0_IRQn, 10); 
+    
+    platform_enable_interrupt(EXTI0_IRQn);
     uart1_mutex = xSemaphoreCreateMutexStatic(&uart1_mutex_buffer);
+    //Inicia Fila do Shell e Interrupção
+    shell_config_t s_cfg = { .print = uart1_safe_send };
+    shell_init(&s_cfg);
+
+    shell_rx_queue = xQueueCreateStatic(32, 1, shell_queue_storage, &shell_queue_struct);
+    USART1->CR1 |= USART_CR1_RXNEIE; 
+    platform_set_irq_priority(USART1_IRQn, PLATFORM_PRIO_SAFE);
+    platform_enable_interrupt(USART1_IRQn);
+
     uart1_safe_send("\r\n--- STARTING L2(Parser), L3(Storage) and L4(Sensor Management) ---\r\n");
     
     //Kernel and Data Module Initialization
@@ -177,7 +297,14 @@ void fw_init(void) {
         xFaultMonitorstack,      
         &xFaultMonitorskBuffer
     );  
-    
+    xSHELLTaskHandle = xTaskCreateStatic(
+        vShellTask, 
+        "SHELL", 
+        STACK_SIZE_SHELL, 
+        NULL, 
+        1, 
+        shell_stack, 
+        &shell_tcb);
 }
 
 void fw_run(void) {
