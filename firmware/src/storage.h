@@ -29,26 +29,28 @@ typedef struct {
     uint8_t     head;                                   /**< Circular buffer index (0 to RING_BUFFER_SIZE-1) */
     uint8_t     len[RING_BUFFER_SIZE];                  /**< Individual length for each stored slot */
     uint8_t     last_payload[PAYLOAD_SIZE];             /**< Snapshot of the most recent data */
-    uint8_t     last_len; 
-    uint32_t    sample_count;
-    TickType_t  last_rx_tick;
-    bool        registered;
+    uint8_t     last_len;                               /**< Length of the latest snapshot */
+    uint32_t    sample_count;                           /**< Total valid packets processed since boot */
+    TickType_t  last_rx_tick;                           /**< System tick of the last successful update */
+    bool        registered;                             /**< Connectivity flag for the watchdog monitor */
 } sensor_data_t;
 
-/* Initialize the Mutex and clear the Vault.*/
+/* --- Public API --- */
+
+/** @brief Initializes the storage mutex and clears all sensor records. */
 void storage_init(void);
 
-/* Save a new package coming from the Parser.*/
+/** @brief Persists a new packet from the Parser into the sensor's circular buffer. */
 bool storage_save_packet(uint8_t sensor_id, uint8_t *payload, uint8_t len);
 
-/* 
-Returns a pointer to the sensor data (for the shell to read) 
-IMPORTANT: Must be used between storage_lock() and storage_unlock 
-   */
+/** * @brief  Retrieves a pointer to a specific sensor's data.
+ * @note   CRITICAL: Must be called between storage_lock() and storage_unlock().
+ */
 sensor_data_t* storage_get_sensor(uint8_t sensor_id);
 
-/* Access control functions for the Shell */
+/** @brief Attempts to acquire the storage mutex for thread-safe access. */
 bool storage_lock(TickType_t xTicksToWait);
+/** @brief Releases the storage mutex. */
 void storage_unlock(void);
 
 #endif
