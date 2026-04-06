@@ -12,7 +12,11 @@
 
 typedef struct {
     uint8_t    slots[RING_BUFFER_SIZE][PAYLOAD_SIZE];
+    uint8_t    head; //control the buffer rotation (0 to 7
+    uint8_t len[RING_BUFFER_SIZE];
     uint8_t    last_payload[PAYLOAD_SIZE];
+    uint8_t last_len; 
+    
     uint32_t   sample_count;
     TickType_t last_rx_tick;
     bool       registered;

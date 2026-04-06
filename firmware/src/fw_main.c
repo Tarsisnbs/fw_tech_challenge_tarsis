@@ -22,7 +22,7 @@ static QueueHandle_t    uart_rx_queue = NULL;
 #define STACK_SIZE_LED 128
 static StackType_t      xLEDStack[STACK_SIZE_LED];
 static StaticTask_t     xLEDTaskBuffer;
-TaskHandle_t xLEDTaskHandle = NULL;
+TaskHandle_t xWDGLEDTaskHandle = NULL;
 
 // Task Parser
 static StackType_t      parser_stack[STACK_SIZE_WORDS];
@@ -34,6 +34,20 @@ TaskHandle_t xPARSERTaskHandle = NULL;
 //Telemetry global Variables
 volatile uint32_t       isr_drop_count = 0; 
 volatile uint32_t       isr_rx_count = 0;
+
+//acess USART1
+static StaticSemaphore_t uart1_mutex_buffer;
+static SemaphoreHandle_t uart1_mutex;
+
+//secure use of USART1 with MUTEX
+static void uart1_safe_send(const char *str) {
+    if (uart1_mutex) {
+        xSemaphoreTake(uart1_mutex, portMAX_DELAY);
+        hal_uart1_send_str(str);
+        xSemaphoreGive(uart1_mutex);
+    }
+}
+
 
 static void uart2_rx_callback(uint8_t byte) {
     BaseType_t xHigherPriorityTaskWoken = pdFALSE;
@@ -52,7 +66,7 @@ static void uart2_rx_callback(uint8_t byte) {
     
 }
 
-void vLEDTask(void *pvParameters) {
+void vWDGLEDTask(void *pvParameters) {
     TickType_t xLastWakeTime = xTaskGetTickCount();
     for(;;) {
         hal_gpio_pa5_toggle(); 
@@ -71,7 +85,7 @@ static void parser_task(void *arg) {
                 //The storage handles the Mutex and the Ring Buffer.
                 //Light debug here
                 if (storage_save_packet(pkt.sensor_id, pkt.payload, pkt.payload_len)) {
-                    hal_uart1_send_str("."); //save ok in buffer
+                    uart1_safe_send("."); //save ok in buffer
                 }
                 else{
                     hal_uart1_send_str("!"); //save error
@@ -82,11 +96,45 @@ static void parser_task(void *arg) {
     }
 }
 
+void vFaultMonitorTask(void *pvParameters) {
+    while(1) {
+        bool any_fault = false;
+        TickType_t now = xTaskGetTickCount();
+
+        if (storage_lock(pdMS_TO_TICKS(50))) { // Tenta pegar o Mutex
+            for (int i = 0; i < MAX_SENSORS; i++) {
+                sensor_data_t* s = storage_get_sensor(i);
+                if (s->registered) {
+                    // Requisito 4: Silent por mais de 2000ms?
+                    if ((now - s->last_rx_tick) > pdMS_TO_TICKS(2000)) {
+                        any_fault = true;
+                    }
+                }
+            }
+            storage_unlock();
+        }
+
+        // Atualiza o pino PA6 conforme o Requisito 4
+        hal_gpio_write_pa6(any_fault); 
+
+        vTaskDelay(pdMS_TO_TICKS(200)); // Roda a cada 200ms
+    }
+}
+
+//lad task 
+void led_task(void *arg) {
+    while (1) {
+        hal_gpio_pa6_toggle();
+        vTaskDelay(pdMS_TO_TICKS(500)); // 500ms
+    }
+}
+
 void fw_init(void) {
     //Basic Initialization
     hal_gpio_pa5_init();
     hal_uart1_init(115200);
-    hal_uart1_send_str("\r\n--- STARTING LAYER 2 (parser) and LAYER 3 (ringbuffer) TEST ---\r\n");
+    uart1_mutex = xSemaphoreCreateMutexStatic(&uart1_mutex_buffer);
+    uart1_safe_send("\r\n--- STARTING LAYER 2 (parser) and LAYER 3 (ringbuffer) TEST ---\r\n");
     
     //Kernel and Data Module Initialization
     storage_init();
@@ -101,8 +149,8 @@ void fw_init(void) {
     hal_uart2_init(115200, uart2_rx_callback);
 
     //Creating Tasks
-    xLEDTaskHandle = xTaskCreateStatic(
-        vLEDTask,           
+    xWDGLEDTaskHandle = xTaskCreateStatic(
+        vWDGLEDTask,           
         "LED_TASK",         
         STACK_SIZE_LED,   
         NULL,               
@@ -110,7 +158,7 @@ void fw_init(void) {
         xLEDStack,         
         &xLEDTaskBuffer     
     );
-    if (xLEDTaskHandle == NULL){
+    if (xWDGLEDTaskHandle == NULL){
         hal_uart1_send_str("ERROR: Failed to create LED task\r\n");
         while(1);
     }
@@ -123,6 +171,8 @@ void fw_init(void) {
         parser_stack, 
         &parser_tcb
     );
+    xWDGLEDTaskHandle = xTaskCreateStatic(
+    xTaskCreate(led_task, "led", 128, NULL, 1, NULL);
     
 }
 
