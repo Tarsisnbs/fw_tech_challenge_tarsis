@@ -1,16 +1,20 @@
-#include "fw_main.h"
-#include "hal_uart.h"
-#include "hal_gpio.h"
-#include "parser.h"
-#include "platform.h"
-#include "storage.h"  
+/* RTOS Kernel */
 #include "FreeRTOS.h"
 #include "task.h"
 #include "queue.h"
-#include <string.h>
-#include <stdio.h>
-#include "sensors.h"
+
+/* Infrastructure & Platform */
+#include "platform.h"
+#include "storage.h"
+
+/* Hardware Abstraction Layer */
+#include "hal_uart.h"
+#include "hal_gpio.h"
+
+/* Application Modules (Tasks) */
 #include "shell.h"
+#include "parser.h"
+#include "sensors.h"
 
 /* --- Infrastructure & Queues --- */
 #define UART_QUEUE_LENGTH 128
@@ -46,7 +50,7 @@ static raw_packet_t     pkt;
 static StaticSemaphore_t uart1_mutex_buffer;
 static SemaphoreHandle_t uart1_mutex;
 
-/* --- UART 1 Safe Send (Mutex Protected) --- */
+/* Implementation of thread-safe UART transmission */
 static void uart1_safe_send(const char *str) { 
     if (uart1_mutex) {
         xSemaphoreTake(uart1_mutex, portMAX_DELAY);
@@ -68,6 +72,13 @@ void USART1_IRQHandler(void) {
     }
 }
 
+/**
+ * @brief  Callback de interrupção externa para o botão (PB0).
+ * @details Acionada na borda de descida (falling edge). Envia uma 
+ * Notificação direta para a Task do Shell disparar o comando 'DUMP'.
+ * * @note   Utiliza APIs 'FromISR' para garantir a segurança do kernel 
+ * do FreeRTOS dentro de um contexto de interrupção.
+ */
 void pb0_falling_callback(void) {
     if (xSHELLTaskHandle != NULL) {
         BaseType_t woken = pdFALSE;
@@ -76,12 +87,32 @@ void pb0_falling_callback(void) {
     }
 }
 
+/**
+ * @brief  UART2 Receive Character Callback (ISR Context).
+ * @details This internal callback is triggered by the UART hardware for every 
+ * received byte. It pushes the byte into the RX queue for the Parser Task.
+ * * @param  byte: The character received from the UART2 peripheral.
+ * @note   Uses 'FromISR' queue API to ensure thread-safety. If a higher 
+ * priority task (Parser) is waiting for this data, a context switch 
+ * is requested immediately via portYIELD_FROM_ISR.
+ */
 static void uart2_rx_callback(uint8_t byte) {
     BaseType_t woken = pdFALSE;
     if (uart_rx_queue != NULL) xQueueSendFromISR(uart_rx_queue, &byte, &woken);
     portYIELD_FROM_ISR(woken);
 }
 
+/**
+ * @brief  Protocol Parser Task.
+ * @details This task waits indefinitely for raw bytes from the UART2 RX queue.
+ * It feeds the state-machine parser and, upon valid packet detection:
+ * 1. Updates the sensor's "alive" timestamp.
+ * 2. Persists the data into the internal storage module.
+ * 3. Sends a visual feedback ('.') to the debug console (UART1).
+ * * @param  arg: Task parameters (unused).
+ * @note   Blocking call: xQueueReceive uses portMAX_DELAY to yield CPU 
+ * while the RX queue is empty.
+ */
 static void parser_task(void *arg) {
     (void)arg;
     uint8_t byte;
@@ -99,6 +130,15 @@ static void parser_task(void *arg) {
     }
 }
 
+/**
+ * @brief  System Heartbeat and Watchdog Visual Monitor Task.
+ * @details Toggles the onboard LED at a 1Hz frequency (500ms period).
+ * This task serves as a visual indicator that the FreeRTOS scheduler is 
+ * active and running correctly.
+ * @param  pvParameters: Task parameters (unused).
+ * @note   In a production environment, this task is the ideal place to 
+ * "kick" or "refresh" the Independent Watchdog (IWDG).
+ */
 void vWDGLEDTask(void *pvParameters) {
     (void)pvParameters;
     for(;;) {
@@ -107,6 +147,16 @@ void vWDGLEDTask(void *pvParameters) {
     }
 }
 
+/**
+ * @brief  System Health and Sensor Fault Monitor Task.
+ * @details This task implements a Software Watchdog pattern. It periodically 
+ * queries the sensor module to ensure data freshness. If any node remains 
+ * silent beyond the grace period, a system-wide FAULT is declared.
+ * * @param  pvParameters: Standard FreeRTOS task parameters (unused).
+ * * @note   Execution Frequency: 5Hz (200ms). This rate is chosen to provide 
+ * a rapid response to failures while minimizing CPU overhead on the 
+ * STM32F411 core.
+ */
 void vFaultMonitorTask(void *pvParameters) {
     (void)pvParameters;
     for(;;) {
@@ -116,8 +166,16 @@ void vFaultMonitorTask(void *pvParameters) {
     }
 }
 
-/* --- CORE INIT --- */
-
+/**
+ * @brief  System Firmware Initialization (Entry Point).
+ * @details This function orchestrates the sequential initialization of:
+ * 1. Low-level Hardware (GPIO, UART, Interrupts).
+ * 2. Static RTOS Resources (Mutexes, Queues).
+ * 3. Middleware and Storage layers.
+ * 4. Application Tasks with static memory allocation.
+ * * @note   Static allocation is used throughout to ensure deterministic 
+ * memory footprints and prevent heap fragmentation/overflows.
+ */
 void fw_init(void) {
     // Hardware Initialization (LEDs and UARTs)
     hal_gpio_pa5_init();
@@ -195,6 +253,7 @@ void fw_init(void) {
     uart1_safe_send("\r\n--- STARTING---\r\n");
 }
 
+//run Scheduler
 void fw_run(void) {
     vTaskStartScheduler();
     while(1);
