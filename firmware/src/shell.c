@@ -50,6 +50,12 @@ static void process_command(char *cmd) {
     }
 }
 
+/**
+ * @brief   Main Shell Processing Loop.
+ * @details Dual-Input handling:
+ * 1. Queue-based: Receives bytes from UART ISR and assembles lines.
+ * 2. Notification-based: Responds immediately to hardware button events.
+ */
 void vShellTask(void *arg) {
     (void)arg;
     uint8_t c;
@@ -59,18 +65,27 @@ void vShellTask(void *arg) {
     shell_print("Shell Online\n");
 
     for (;;) {
-        // Bloqueia esperando Notificação (Botão) OU Dado na Fila (UART)
+        /**
+         * Wait for characters from the RX queue.
+         * Timeout is set to 50ms to allow periodic polling of Task Notifications.
+         */
         if (xQueueReceive(shell_rx_queue, &c, pdMS_TO_TICKS(50)) == pdPASS) {
+            /* Line End Detection (CR or LF) */
             if (c == '\n' || c == '\r') {
-                buf[idx] = '\0';
+                buf[idx] = '\0'; /* Reset buffer for next command */
                 if (idx > 0) process_command(buf);
                 idx = 0;
-            } else if (idx < 31) {
+            }
+            /* Buffer overflow protection */ 
+            else if (idx < 31) {
                 buf[idx++] = c;
             }
         }
-        
-        // Verifica se houve notificação do botão (sem bloquear, pois a fila já bloqueia)
+        /**
+         * Direct-to-Task Notification Check.
+         * Triggered by pb0_falling_callback (Physical Button).
+         * This allows an 'Out-of-Band' command trigger without UART input.
+         */
         if (ulTaskNotifyTake(pdTRUE, 0) > 0) {
             process_command("DUMP");
         }

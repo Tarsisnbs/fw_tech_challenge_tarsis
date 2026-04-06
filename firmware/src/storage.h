@@ -6,20 +6,33 @@
 #include "FreeRTOS.h"
 #include "semphr.h"
 
-#define MAX_SENSORS       4
-#define RING_BUFFER_SIZE  8
-#define PAYLOAD_SIZE      16
+/**
+ * @file    storage.h
+ * @brief   Thread-safe Data Storage and Persistence Module.
+ * @details Manages the internal registry for sensor data. Provides 
+ * synchronization primitives (Mutex) to ensure atomic access between 
+ * high-priority parsing and low-priority shell reporting.
+ */
 
+/* --- Constants & Types --- */
+#define MAX_SENSORS       4  /* Scaled to ensure 6KB RAM compliance */
+#define RING_BUFFER_SIZE  8  /* Minimized for footprint optimization */
+#define PAYLOAD_SIZE      16 /* Fixed for deterministic memory allocation */
+
+/**
+ * @struct sensor_data_t
+ * @brief  Core telemetry structure with internal ring buffering.
+ * @details Stores a history of payloads per sensor for asynchronous processing.
+ */
 typedef struct {
-    uint8_t    slots[RING_BUFFER_SIZE][PAYLOAD_SIZE];
-    uint8_t    head; //control the buffer rotation (0 to 7
-    uint8_t len[RING_BUFFER_SIZE];
-    uint8_t    last_payload[PAYLOAD_SIZE];
-    uint8_t last_len; 
-    
-    uint32_t   sample_count;
-    TickType_t last_rx_tick;
-    bool       registered;
+    uint8_t     slots[RING_BUFFER_SIZE][PAYLOAD_SIZE];  /**< History of received packets */
+    uint8_t     head;                                   /**< Circular buffer index (0 to RING_BUFFER_SIZE-1) */
+    uint8_t     len[RING_BUFFER_SIZE];                  /**< Individual length for each stored slot */
+    uint8_t     last_payload[PAYLOAD_SIZE];             /**< Snapshot of the most recent data */
+    uint8_t     last_len; 
+    uint32_t    sample_count;
+    TickType_t  last_rx_tick;
+    bool        registered;
 } sensor_data_t;
 
 /* Initialize the Mutex and clear the Vault.*/
