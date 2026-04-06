@@ -9,6 +9,7 @@
 #include "task.h"
 #include "queue.h"
 #include <string.h>
+#include "sensors.h"
 
 /* --- Static Settings--- */
 #define UART_QUEUE_LENGTH 128
@@ -83,29 +84,24 @@ void vWDGLEDTask(void *pvParameters) {
 static void parser_task(void *arg) {
     uint8_t byte;
     parser_init(&parser);
-    hal_uart1_send_str("Parser Task: Running\r\n");
+    uart1_safe_send("Parser Task: Running\r\n");
 
     for (;;) {
         if (xQueueReceive(uart_rx_queue, &byte, portMAX_DELAY)) {
+            //Layer 2 - Attempts to assemble the package.
             if (parse_byte(&parser, byte, &pkt)) {
-                //The storage handles the Mutex and the Ring Buffer.
-                //Light debug here
-                // --- ADICIONE ESTA LÓGICA AQUI ---
-                if (storage_lock(pdMS_TO_TICKS(50))) {
-                    sensor_data_t* s = storage_get_sensor(pkt.sensor_id);
-                    if (s) {
-                        s->registered = true;              // Ativa o monitoramento para este ID
-                        s->last_rx_tick = xTaskGetTickCount(); // Reseta o cronômetro de 2s
-                    }
-                    storage_unlock();
-                }
-                // --------------------------------
+                //Layer 4 - Indicates that the sensor has given a sign of life.
+                //          It handles the lock, tick, and registered operations internally.
+                sensors_touch_alive(pkt.sensor_id);
 
+                // Layer 3 - Save the data to storage.
+                //           the '.' indicate that te data was stored.
                 if (storage_save_packet(pkt.sensor_id, pkt.payload, pkt.payload_len)) {
                     uart1_safe_send("."); 
                 } else {
-                    hal_uart1_send_str("!"); 
+                    uart1_safe_send("!"); 
                 }
+                //Clean up for next time
                 memset(&pkt, 0, sizeof(raw_packet_t));
             }
         }
@@ -114,25 +110,10 @@ static void parser_task(void *arg) {
 
 void vFaultMonitorTask(void *pvParameters) {
     while(1) {
-        bool any_fault = false;
-        TickType_t now = xTaskGetTickCount();
-
-        if (storage_lock(pdMS_TO_TICKS(50))) { // Tenta pegar o Mutex
-            for (int i = 0; i < MAX_SENSORS; i++) {
-                sensor_data_t* s = storage_get_sensor(i);
-                if (s && s->registered) {
-                    // Requisito 4: Silent por mais de 2000ms?
-                    if ((now - s->last_rx_tick) > pdMS_TO_TICKS(2000)) {
-                        any_fault = true;
-                        break;
-                    }
-                }
-            }
-            storage_unlock();
-        }
-        hal_gpio_pa6_set(any_fault);   
-
-        vTaskDelay(pdMS_TO_TICKS(200)); // Roda a cada 200ms
+        // Layer 4 is ok
+        bool system_fault = sensors_check_for_timeout(2000);
+        hal_gpio_pa6_set(system_fault);   
+        vTaskDelay(pdMS_TO_TICKS(200));
     }
 }
 
@@ -150,7 +131,7 @@ void fw_init(void) {
     hal_gpio_pa6_init();
     hal_uart1_init(115200);
     uart1_mutex = xSemaphoreCreateMutexStatic(&uart1_mutex_buffer);
-    uart1_safe_send("\r\n--- STARTING LAYER 2 (parser) and LAYER 3 (ringbuffer) TEST ---\r\n");
+    uart1_safe_send("\r\n--- STARTING L2(Parser), L3(Storage) and L4(Sensor Management) ---\r\n");
     
     //Kernel and Data Module Initialization
     storage_init();
